@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lunar Lander: Level Progression</title>
+    <style>
+        body {
+            background-color: #0a0a0c;
+            color: #00ff41;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        #game-container {
+            position: relative;
+            border: 2px solid #333;
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.2);
+        }
+
+        canvas {
+            display: block;
+            background: radial-gradient(circle at center, #1a1a2e 0%, #0a0a0c 100%);
+        }
+
+        .stats {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            pointer-events: none;
+        }
+
+        #message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 24px;
+            text-align: center;
+            display: none;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 20px;
+            border: 1px solid #00ff41;
+            z-index: 10;
+        }
+
+        .level-badge {
+            color: #ffff00;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>LUNAR LANDER: <span id="current-lvl-text">LEVEL 1</span></h2>
+
+    <div id="game-container">
+        <div class="stats">
+            FUEL: <span id="fuel">100</span>%<br>
+            V-SPEED: <span id="speed">0</span> m/s<br>
+            TARGET: < 2.00
+        </div>
+        <div id="message"></div>
+        <canvas id="gameCanvas" width="600" height="400"></canvas>
+    </div>
+
+    <p>Hold [UP ARROW] to thrust. Space to restart/next level.</p>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const fuelEl = document.getElementById('fuel');
+        const speedEl = document.getElementById('speed');
+        const msgEl = document.getElementById('message');
+        const levelText = document.getElementById('current-lvl-text');
+
+        // Game Constants & State
+        let currentLevel = 1;
+        let lander, stars, padWidth, gravity;
+
+        function setupLevel(lvl) {
+            currentLevel = lvl;
+            levelText.innerText = "LEVEL " + lvl;
+            
+            // Level 2 is harder: Higher gravity, smaller landing pad
+            gravity = lvl === 1 ? 0.015 : 0.025;
+            padWidth = lvl === 1 ? 80 : 40;
+
+            lander = {
+                x: 300,
+                y: 50,
+                velocityV: 0,
+                thrust: 0.05,
+                fuel: 100,
+                isThrusting: false,
+                gameOver: false,
+                won: false
+            };
+
+            stars = Array.from({length: 50}, () => ({
+                x: Math.random() * canvas.width, 
+                y: Math.random() * canvas.height, 
+                s: Math.random() * 2
+            }));
+
+            msgEl.style.display = 'none';
+            animate();
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'ArrowUp' && lander.fuel > 0 && !lander.gameOver) lander.isThrusting = true;
+            if (lander.gameOver && e.code === 'Space') {
+                if (lander.won && currentLevel === 1) setupLevel(2);
+                else setupLevel(1); // Reset to start on death or full completion
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowUp') lander.isThrusting = false;
+        });
+
+        function update() {
+            if (lander.gameOver) return;
+
+            lander.velocityV += gravity;
+            if (lander.isThrusting && lander.fuel > 0) {
+                lander.velocityV -= lander.thrust;
+                lander.fuel -= 0.25;
+            }
+
+            lander.y += lander.velocityV;
+            
+            fuelEl.innerText = Math.max(0, Math.floor(lander.fuel));
+            speedEl.innerText = lander.velocityV.toFixed(2);
+
+            // Ground Collision
+            if (lander.y + 25 >= 380) {
+                lander.gameOver = true;
+                lander.y = 355; 
+                checkLanding();
+            }
+        }
+
+        function checkLanding() {
+            msgEl.style.display = 'block';
+            const safeSpeed = lander.velocityV < 2.0;
+            const onPad = lander.x > (300 - padWidth/2) && lander.x < (300 + padWidth/2);
+
+            if (safeSpeed && onPad) {
+                lander.won = true;
+                if (currentLevel === 1) {
+                    msgEl.innerHTML = "<span style='color:#00ff41'>LEVEL 1 CLEAR!</span><br><small>Press SPACE for Level 2</small>";
+                } else {
+                    msgEl.innerHTML = "<span style='color:#ffff00'>MISSION COMPLETE!</span><br><small>You mastered the Moon. Space to restart.</small>";
+                }
+            } else {
+                lander.won = false;
+                let reason = !onPad ? "MISSED THE PAD" : "TOO FAST";
+                msgEl.innerHTML = `<span style='color:#ff3333'>CRASHED: ${reason}</span><br><small>Press SPACE to try Level 1</small>`;
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = "white";
+            stars.forEach(s => ctx.fillRect(s.x, s.y, s.s, s.s));
+
+            // Ground
+            ctx.strokeStyle = "#555";
+            ctx.beginPath(); ctx.moveTo(0, 380); ctx.lineTo(600, 380); ctx.stroke();
+
+            // Dynamic Pad (Smaller on Level 2)
+            ctx.strokeStyle = "#00ff41";
+            ctx.lineWidth = 3;
+            ctx.strokeRect(300 - padWidth/2, 380, padWidth, 5);
+            ctx.lineWidth = 1;
+
+            // Lander
+            ctx.save();
+            ctx.translate(lander.x, lander.y);
+            if (lander.isThrusting && lander.fuel > 0) {
+                ctx.fillStyle = '#ff6600';
+                ctx.beginPath(); ctx.moveTo(-5, 15); ctx.lineTo(0, 30); ctx.lineTo(5, 15); ctx.fill();
+            }
+            ctx.strokeStyle = lander.gameOver && !lander.won ? '#ff3333' : '#00ff41';
+            ctx.strokeRect(-15, -15, 30, 30);
+            ctx.restore();
+        }
+
+        function animate() {
+            update();
+            draw();
+            if (!lander.gameOver) requestAnimationFrame(animate);
+        }
+
+        setupLevel(1);
+    </script>
+</body>
+</html>
