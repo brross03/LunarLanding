@@ -3,57 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lunar Lander: Level Progression</title>
+    <title>Lunar Lander: Vanguard Edition</title>
     <style>
-        body {
-            background-color: #0a0a0c;
-            color: #00ff41;
-            font-family: 'Courier New', Courier, monospace;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            overflow: hidden;
-        }
-
-        #game-container {
-            position: relative;
-            border: 2px solid #333;
-            box-shadow: 0 0 20px rgba(0, 255, 65, 0.2);
-        }
-
-        canvas {
-            display: block;
-            background: radial-gradient(circle at center, #1a1a2e 0%, #0a0a0c 100%);
-        }
-
-        .stats {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            pointer-events: none;
-        }
-
-        #message {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 24px;
-            text-align: center;
-            display: none;
-            background: rgba(0, 0, 0, 0.9);
-            padding: 20px;
-            border: 1px solid #00ff41;
-            z-index: 10;
-        }
-
-        .level-badge {
-            color: #ffff00;
-            font-weight: bold;
-        }
+        body { background-color: #050508; color: #00ff41; font-family: 'Courier New', monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+        #game-container { position: relative; border: 2px solid #333; box-shadow: 0 0 20px rgba(0,255,65,0.2); }
+        canvas { display: block; background: radial-gradient(circle at center, #111 0%, #000 100%); }
+        .stats { position: absolute; top: 10px; left: 10px; pointer-events: none; background: rgba(0,0,0,0.6); padding: 10px; border-left: 3px solid #00ff41; }
+        #message { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 22px; text-align: center; display: none; background: rgba(0,0,0,0.95); padding: 30px; border: 2px solid #00ff41; z-index: 10; }
+        .safe { color: #00ff41; }
+        .danger { color: #ff3333; }
+        #drift-warning { color: #0088ff; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -63,142 +22,185 @@
     <div id="game-container">
         <div class="stats">
             FUEL: <span id="fuel">100</span>%<br>
-            V-SPEED: <span id="speed">0</span> m/s<br>
-            TARGET: < 2.00
+            V-SPEED: <span id="speed">0</span> (MAX 2.0)<br>
+            H-SPEED: <span id="hSpeed">0</span> (MAX 0.8)<br>
+            <span id="drift-warning"></span>
         </div>
         <div id="message"></div>
         <canvas id="gameCanvas" width="600" height="400"></canvas>
     </div>
 
-    <p>Hold [UP ARROW] to thrust. Space to restart/next level.</p>
+    <p>[Arrows] to Pilot | Space to Start Music & Mission</p>
 
     <script>
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const fuelEl = document.getElementById('fuel');
         const speedEl = document.getElementById('speed');
+        const hSpeedEl = document.getElementById('hSpeed');
         const msgEl = document.getElementById('message');
         const levelText = document.getElementById('current-lvl-text');
+        const driftText = document.getElementById('drift-warning');
 
-        // Game Constants & State
+        // --- AUDIO INTEGRATION ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        let musicStarted = false;
+        let engineOsc = null;
+        
+        // This links to your downloaded music file
+        const bgMusic = new Audio('orbit_of_the_vanguard.mp3'); 
+        bgMusic.loop = true;
+
+        function playSound(freq, type, duration, vol) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + duration);
+        }
+
+        function startEngineSound() {
+            if (engineOsc) return;
+            engineOsc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            engineOsc.type = 'sine';
+            engineOsc.frequency.setValueAtTime(140, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0.02, audioCtx.currentTime);
+            engineOsc.connect(gain);
+            gain.connect(audioCtx.destination);
+            engineOsc.start();
+            engineOsc.node = gain;
+        }
+
+        function stopEngineSound() {
+            if (engineOsc) { engineOsc.stop(); engineOsc = null; }
+        }
+
+        // --- GAME LOGIC ---
         let currentLevel = 1;
-        let lander, stars, padWidth, gravity;
+        let lander, stars, padWidth, gravity, asteroids, solarWind;
+        let animationId;
+        let keys = {};
 
         function setupLevel(lvl) {
+            cancelAnimationFrame(animationId);
             currentLevel = lvl;
             levelText.innerText = "LEVEL " + lvl;
+            solarWind = (lvl === 4) ? -0.018 : 0;
+            driftText.innerText = (lvl === 4) ? "SOLAR WIND DETECTED" : "";
             
-            // Level 2 is harder: Higher gravity, smaller landing pad
-            gravity = lvl === 1 ? 0.015 : 0.025;
-            padWidth = lvl === 1 ? 80 : 40;
+            gravity = [0, 0.015, 0.022, 0.030, 0.038][lvl];
+            padWidth = [0, 80, 50, 30, 20][lvl];
+            const asteroidCount = [0, 0, 3, 5, 7][lvl];
 
-            lander = {
-                x: 300,
-                y: 50,
-                velocityV: 0,
-                thrust: 0.05,
-                fuel: 100,
-                isThrusting: false,
-                gameOver: false,
-                won: false
-            };
+            asteroids = [];
+            for (let i = 0; i < asteroidCount; i++) {
+                asteroids.push({
+                    x: Math.random() * 400 + 100,
+                    y: 100 + (i * 45),
+                    radius: (lvl === 4 && i === 0) ? 25 : 10,
+                    speed: (1.5 + (lvl * 0.5)) * (Math.random() > 0.5 ? 1 : -1)
+                });
+            }
 
-            stars = Array.from({length: 50}, () => ({
-                x: Math.random() * canvas.width, 
-                y: Math.random() * canvas.height, 
-                s: Math.random() * 2
-            }));
-
+            lander = { x: 300, y: 50, velocityX: 0, velocityV: 0, thrustV: 0.07, thrustH: 0.03, fuel: 100, gameOver: false, won: false };
+            stars = Array.from({length: 60}, () => ({ x: Math.random()*600, y: Math.random()*400, s: Math.random()*2 }));
             msgEl.style.display = 'none';
             animate();
         }
 
         window.addEventListener('keydown', (e) => {
-            if (e.code === 'ArrowUp' && lander.fuel > 0 && !lander.gameOver) lander.isThrusting = true;
-            if (lander.gameOver && e.code === 'Space') {
-                if (lander.won && currentLevel === 1) setupLevel(2);
-                else setupLevel(1); // Reset to start on death or full completion
+            keys[e.code] = true;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            if (e.code === 'Space') {
+                if (!musicStarted) { bgMusic.play(); musicStarted = true; }
+                if (lander.gameOver) {
+                    if (lander.won && currentLevel < 4) setupLevel(currentLevel + 1);
+                    else if (lander.won && currentLevel === 4) setupLevel(1);
+                    else setupLevel(currentLevel);
+                }
             }
+            if ((e.code === 'ArrowUp' || e.code === 'ArrowLeft' || e.code === 'ArrowRight') && !lander.gameOver && lander.fuel > 0) startEngineSound();
         });
 
         window.addEventListener('keyup', (e) => {
-            if (e.code === 'ArrowUp') lander.isThrusting = false;
+            keys[e.code] = false;
+            if (!keys['ArrowUp'] && !keys['ArrowLeft'] && !keys['ArrowRight']) stopEngineSound();
         });
 
         function update() {
-            if (lander.gameOver) return;
-
+            if (!lander || lander.gameOver) return;
             lander.velocityV += gravity;
-            if (lander.isThrusting && lander.fuel > 0) {
-                lander.velocityV -= lander.thrust;
-                lander.fuel -= 0.25;
-            }
+            lander.velocityX += solarWind;
 
-            lander.y += lander.velocityV;
-            
+            if (lander.fuel > 0) {
+                if (keys['ArrowUp']) { lander.velocityV -= lander.thrustV; lander.fuel -= 0.3; }
+                if (keys['ArrowLeft']) { lander.velocityX -= lander.thrustH; lander.fuel -= 0.1; }
+                if (keys['ArrowRight']) { lander.velocityX += lander.thrustH; lander.fuel -= 0.1; }
+            } else { stopEngineSound(); }
+
+            lander.y += lander.velocityV; lander.x += lander.velocityX;
+            if (lander.x < 0) lander.x = 600; if (lander.x > 600) lander.x = 0;
+
+            asteroids.forEach(a => {
+                a.x += a.speed;
+                if (a.x > 585 || a.x < 15) a.speed *= -1;
+                if (Math.hypot(lander.x - a.x, lander.y - a.y) < a.radius + 12) {
+                    lander.gameOver = true; stopEngineSound();
+                    playSound(60, 'sawtooth', 0.8, 0.15); 
+                    checkLanding(true);
+                }
+            });
+
             fuelEl.innerText = Math.max(0, Math.floor(lander.fuel));
             speedEl.innerText = lander.velocityV.toFixed(2);
+            speedEl.className = lander.velocityV < 2.0 ? "safe" : "danger";
+            hSpeedEl.innerText = Math.abs(lander.velocityX).toFixed(2);
+            hSpeedEl.className = Math.abs(lander.velocityX) < 0.8 ? "safe" : "danger";
 
-            // Ground Collision
             if (lander.y + 25 >= 380) {
-                lander.gameOver = true;
-                lander.y = 355; 
-                checkLanding();
+                lander.gameOver = true; lander.y = 355;
+                stopEngineSound(); checkLanding(false);
             }
         }
 
-        function checkLanding() {
+        function checkLanding(hitAsteroid) {
             msgEl.style.display = 'block';
-            const safeSpeed = lander.velocityV < 2.0;
+            if (hitAsteroid) { msgEl.innerHTML = "<span class='danger'>COLLISION!</span><br><small>Space to retry</small>"; return; }
+            const vSafe = lander.velocityV < 2.0;
+            const hSafe = Math.abs(lander.velocityX) < 0.8;
             const onPad = lander.x > (300 - padWidth/2) && lander.x < (300 + padWidth/2);
-
-            if (safeSpeed && onPad) {
+            if (vSafe && hSafe && onPad) {
                 lander.won = true;
-                if (currentLevel === 1) {
-                    msgEl.innerHTML = "<span style='color:#00ff41'>LEVEL 1 CLEAR!</span><br><small>Press SPACE for Level 2</small>";
-                } else {
-                    msgEl.innerHTML = "<span style='color:#ffff00'>MISSION COMPLETE!</span><br><small>You mastered the Moon. Space to restart.</small>";
-                }
+                playSound(600, 'sine', 0.3, 0.05);
+                msgEl.innerHTML = "<span class='safe'>MISSION SUCCESS!</span><br><small>Space to proceed</small>";
             } else {
-                lander.won = false;
-                let reason = !onPad ? "MISSED THE PAD" : "TOO FAST";
-                msgEl.innerHTML = `<span style='color:#ff3333'>CRASHED: ${reason}</span><br><small>Press SPACE to try Level 1</small>`;
+                playSound(90, 'sawtooth', 0.5, 0.1);
+                msgEl.innerHTML = "<span class='danger'>CRASH!</span><br><small>Space to retry</small>";
             }
         }
 
         function draw() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = "white";
-            stars.forEach(s => ctx.fillRect(s.x, s.y, s.s, s.s));
-
-            // Ground
-            ctx.strokeStyle = "#555";
-            ctx.beginPath(); ctx.moveTo(0, 380); ctx.lineTo(600, 380); ctx.stroke();
-
-            // Dynamic Pad (Smaller on Level 2)
-            ctx.strokeStyle = "#00ff41";
-            ctx.lineWidth = 3;
-            ctx.strokeRect(300 - padWidth/2, 380, padWidth, 5);
-            ctx.lineWidth = 1;
-
-            // Lander
-            ctx.save();
-            ctx.translate(lander.x, lander.y);
-            if (lander.isThrusting && lander.fuel > 0) {
-                ctx.fillStyle = '#ff6600';
-                ctx.beginPath(); ctx.moveTo(-5, 15); ctx.lineTo(0, 30); ctx.lineTo(5, 15); ctx.fill();
-            }
-            ctx.strokeStyle = lander.gameOver && !lander.won ? '#ff3333' : '#00ff41';
-            ctx.strokeRect(-15, -15, 30, 30);
-            ctx.restore();
+            ctx.clearRect(0, 0, 600, 400);
+            ctx.fillStyle = "white"; stars.forEach(s => ctx.fillRect(s.x, s.y, s.s, s.s));
+            ctx.fillStyle = ["#ff3333", "#ff3333", "#ff3333", "#ff00ff", "#0088ff"][currentLevel];
+            asteroids.forEach(a => { ctx.beginPath(); ctx.arc(a.x, a.y, a.radius, 0, Math.PI*2); ctx.fill(); });
+            ctx.strokeStyle = "#444"; ctx.beginPath(); ctx.moveTo(0, 380); ctx.lineTo(600, 380); ctx.stroke();
+            ctx.strokeStyle = "#00ff41"; ctx.lineWidth = 3; ctx.strokeRect(300 - padWidth/2, 380, padWidth, 5); ctx.lineWidth = 1;
+            ctx.save(); ctx.translate(lander.x, lander.y);
+            if (keys['ArrowUp'] && lander.fuel > 0) { ctx.fillStyle = '#ff6600'; ctx.beginPath(); ctx.moveTo(-5,15); ctx.lineTo(0,30); ctx.lineTo(5,15); ctx.fill(); }
+            if (keys['ArrowLeft'] && lander.fuel > 0) { ctx.fillStyle = '#0088ff'; ctx.beginPath(); ctx.moveTo(15,-5); ctx.lineTo(25,0); ctx.lineTo(15,5); ctx.fill(); }
+            if (keys['ArrowRight'] && lander.fuel > 0) { ctx.fillStyle = '#0088ff'; ctx.beginPath(); ctx.moveTo(-15,-5); ctx.lineTo(-25,0); ctx.lineTo(-15,5); ctx.fill(); }
+            ctx.strokeStyle = (lander.gameOver && !lander.won) ? '#ff3333' : '#00ff41';
+            ctx.strokeRect(-15, -15, 30, 30); ctx.restore();
         }
 
-        function animate() {
-            update();
-            draw();
-            if (!lander.gameOver) requestAnimationFrame(animate);
-        }
-
+        function animate() { update(); draw(); animationId = requestAnimationFrame(animate); }
         setupLevel(1);
     </script>
 </body>
